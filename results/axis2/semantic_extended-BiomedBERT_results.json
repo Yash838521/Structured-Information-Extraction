@@ -1,0 +1,49 @@
+{
+  "Token-Classification-BiomedBERT": {
+    "participants": {
+      "precision": 0.693623145324716,
+      "recall": 0.8007694748532445,
+      "f1": 0.7103745089732155,
+      "false_positives": 575,
+      "false_negatives": 447,
+      "prediction_volume": 760,
+      "gold_volume": 632,
+      "std_f1": 0.2554970777675116,
+      "n_docs": 191
+    },
+    "interventions": {
+      "precision": 0.6310054546965541,
+      "recall": 0.3926932962070219,
+      "f1": 0.45983915511689427,
+      "false_positives": 786,
+      "false_negatives": 1553,
+      "prediction_volume": 957,
+      "gold_volume": 1724,
+      "std_f1": 0.24371659879309526,
+      "n_docs": 191
+    },
+    "outcomes": {
+      "precision": 0.7132592974216011,
+      "recall": 0.37846267409316464,
+      "f1": 0.45954498444034325,
+      "false_positives": 658,
+      "false_negatives": 1611,
+      "prediction_volume": 840,
+      "gold_volume": 1793,
+      "std_f1": 0.2418405864222917,
+      "n_docs": 191
+    },
+    "_GLOBAL": {
+      "micro_precision": 0.6522239263803681,
+      "micro_recall": 0.40014114326040934,
+      "micro_f1": 0.49599066919376006,
+      "total_tp": 1701,
+      "total_fp": 907,
+      "total_fn": 2550
+    },
+    "_CONSISTENCY": {
+      "mean_f1": 0.5432528828434844,
+      "std_f1_per_doc": 0.1650657259324346
+    }
+  }
+}
