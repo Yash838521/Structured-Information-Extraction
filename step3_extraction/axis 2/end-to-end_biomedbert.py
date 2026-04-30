@@ -10,7 +10,7 @@ import json
 import random
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
-import torch
+
 import numpy as np
 
 try:
@@ -18,7 +18,6 @@ try:
     from torch.utils.data import Dataset
     from transformers import (
         AutoModelForTokenClassification,
-        AutoModelForSequenceClassification,
         AutoTokenizer,
         DataCollatorForTokenClassification,
         Trainer,
@@ -49,13 +48,6 @@ class Example:
         self.split = split
         self.word_labels = word_labels
 
-class SentenceExample:
-    def __init__(self, pmid, tokens, text, split, labels):
-        self.pmid = pmid
-        self.tokens = tokens
-        self.text = text
-        self.split = split
-        self.labels = labels   # [p, i, o]
 
 def load_json(path: str | Path) -> List[Dict]:
     path = Path(path)
@@ -89,85 +81,6 @@ def set_all_seeds(seed: int):
         torch.cuda.manual_seed_all(seed)
     set_seed(seed)
 
-def split_doc_into_sentences(tokens):
-    sentences = []
-    current_tokens = []
-    start_idx = 0
-
-    for i, tok in enumerate(tokens):
-        if not current_tokens:
-            start_idx = i
-        current_tokens.append(tok)
-
-        if tok in {".", "!", "?"}:
-            sentences.append({
-                "tokens": current_tokens[:],
-                "start": start_idx,
-                "end": i + 1,
-            })
-            current_tokens = []
-
-    if current_tokens:
-        sentences.append({
-            "tokens": current_tokens[:],
-            "start": start_idx,
-            "end": len(tokens),
-        })
-
-    return sentences
-
-
-# In[ ]:
-
-
-def filter_doc_with_gold_sentences(doc):
-    tokens = list(doc.get("tokens", []) or [])
-    labels = doc.get("labels", {}) or {}
-
-    if not tokens:
-        return doc
-
-    sentences = split_doc_into_sentences(tokens)
-    keep_indices = []
-
-    part = labels.get("participants", [0] * len(tokens))
-    inter = labels.get("interventions", [0] * len(tokens))
-    outc = labels.get("outcomes", [0] * len(tokens))
-
-    for sent in sentences:
-        s, e = sent["start"], sent["end"]
-
-        has_pio = any(part[s:e]) or any(inter[s:e]) or any(outc[s:e])
-        if has_pio:
-            keep_indices.extend(range(s, e))
-
-    # 如果一篇文档一个候选句都没有，就保留全文，避免变成空输入
-    if not keep_indices:
-        keep_indices = list(range(len(tokens)))
-
-    new_tokens = [tokens[i] for i in keep_indices]
-
-    new_labels = {
-        "participants": [part[i] for i in keep_indices],
-        "interventions": [inter[i] for i in keep_indices],
-        "outcomes": [outc[i] for i in keep_indices],
-    }
-
-    new_spans = {
-        "participants": extract_spans_from_binary_labels(new_tokens, new_labels["participants"]),
-        "interventions": extract_spans_from_binary_labels(new_tokens, new_labels["interventions"]),
-        "outcomes": extract_spans_from_binary_labels(new_tokens, new_labels["outcomes"]),
-    }
-
-    return {
-        "pmid": doc["pmid"],
-        "tokens": new_tokens,
-        "text": " ".join(new_tokens),
-        "split": doc.get("split", ""),
-        "labels": new_labels,
-        "spans": new_spans,
-    }
-
 
 # In[2]:
 
@@ -184,22 +97,6 @@ def binary_to_bio(binary_mask, prefix):
         prev = x
     return out
 
-def extract_spans_from_binary_labels(tokens, binary_labels):
-    spans = []
-    current = []
-
-    for tok, lab in zip(tokens, binary_labels):
-        if int(lab) != 0:
-            current.append(tok)
-        else:
-            if current:
-                spans.append(" ".join(current))
-                current = []
-
-    if current:
-        spans.append(" ".join(current))
-
-    return dedupe_keep_order(spans)
 
 def merge_label_sequences(seqs):
     if not seqs:
@@ -246,75 +143,8 @@ def build_examples(data, split_filter: Optional[str] = None):
         )
     return out
 
-def build_sentence_examples(data, split_filter: Optional[str] = None):
-    out = []
-
-    for item in data:
-        split = str(item.get("split", "")).strip()
-        if split_filter and split != split_filter:
-            continue
-
-        tokens = list(item.get("tokens", []) or [])
-        text = str(item.get("text", "") or "")
-        labels = item.get("labels", {}) or {}
-
-        if not tokens:
-            continue
-
-        part = labels.get("participants", [0] * len(tokens))
-        inter = labels.get("interventions", [0] * len(tokens))
-        outc = labels.get("outcomes", [0] * len(tokens))
-
-        sentences = split_doc_into_sentences(tokens)
-
-        for sent in sentences:
-            s, e = sent["start"], sent["end"]
-            sent_tokens = sent["tokens"]
-            sent_text = " ".join(sent_tokens)
-
-            y_part = 1 if any(part[s:e]) else 0
-            y_inter = 1 if any(inter[s:e]) else 0
-            y_out = 1 if any(outc[s:e]) else 0
-
-            out.append(
-                SentenceExample(
-                    str(item["pmid"]),
-                    sent_tokens,
-                    sent_text,
-                    split,
-                    [y_part, y_inter, y_out],
-                )
-            )
-
-    return out
-
 
 # In[3]:
-
-
-class SentenceClassificationDataset(Dataset):
-    def __init__(self, examples, tokenizer, max_length=128):
-        self.examples = list(examples)
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self):
-        return len(self.examples)
-
-    def __getitem__(self, idx):
-        ex = self.examples[idx]
-        enc = self.tokenizer(
-            ex.text,
-            truncation=True,
-            max_length=self.max_length,
-            padding="max_length",
-        )
-        item = {k: torch.tensor(v, dtype=torch.long) for k, v in enc.items()}
-        item["labels"] = torch.tensor(ex.labels, dtype=torch.float)
-        return item
-
-
-# In[4]:
 
 
 class TokenClassificationDataset(Dataset):
@@ -354,150 +184,7 @@ class TokenClassificationDataset(Dataset):
         return {k: torch.tensor(v, dtype=torch.long) for k, v in item.items()}
 
 
-# In[5]:
-
-
-class SentenceRouter:
-    def __init__(
-        self,
-        model_name="microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract",
-        model_dir="./biomedbert_sentence_router_model",
-        max_length=128,
-        learning_rate=2e-5,
-        num_train_epochs=1,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
-        weight_decay=0.01,
-        seed=123,
-        dev_ratio=0.1,
-        threshold=0.25,
-    ):
-        self.model_name = model_name
-        self.model_dir = Path(model_dir)
-        self.max_length = max_length
-        self.learning_rate = learning_rate
-        self.num_train_epochs = num_train_epochs
-        self.per_device_train_batch_size = per_device_train_batch_size
-        self.per_device_eval_batch_size = per_device_eval_batch_size
-        self.weight_decay = weight_decay
-        self.seed = seed
-        self.dev_ratio = dev_ratio
-        self.threshold = threshold
-        self.tokenizer = None
-        self.model = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    def train(self, train_data):
-        print("----------------------------------Using device:", self.device)
-        set_all_seeds(self.seed)
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-        
-        examples = build_sentence_examples(train_data, split_filter="train")
-        
-        if not examples:
-            raise ValueError("No sentence examples found.")
-
-        random.Random(self.seed).shuffle(examples)
-        #examples = examples[:3000]
-        #print(f"Using {len(examples)} sentence examples for router training")
-        
-        n_dev = max(1, int(len(examples) * self.dev_ratio)) if len(examples) >= 10 else 0
-        dev_examples = examples[:n_dev] if n_dev > 0 else []
-        fit_examples = examples[n_dev:] if n_dev > 0 else examples
-
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            self.model_name,
-            num_labels=3,
-            problem_type="multi_label_classification",
-        )
-        self.model.to(self.device)
-
-        train_dataset = SentenceClassificationDataset(fit_examples, self.tokenizer, max_length=self.max_length)
-        eval_dataset = SentenceClassificationDataset(dev_examples, self.tokenizer, max_length=self.max_length) if dev_examples else None
-
-        args = TrainingArguments(
-            output_dir=str(self.model_dir),
-            learning_rate=self.learning_rate,
-            per_device_train_batch_size=self.per_device_train_batch_size,
-            per_device_eval_batch_size=self.per_device_eval_batch_size,
-            num_train_epochs=self.num_train_epochs,
-            weight_decay=self.weight_decay,
-            logging_steps=20,
-            save_strategy="epoch",
-            eval_strategy="epoch" if eval_dataset is not None else "no",
-            report_to="none",
-            load_best_model_at_end=True if eval_dataset is not None else False,
-            metric_for_best_model="eval_loss" if eval_dataset is not None else None,
-            greater_is_better=False,
-            seed=self.seed,
-            fp16=torch.cuda.is_available(),
-            dataloader_pin_memory=torch.cuda.is_available(),
-        )
-
-        trainer = Trainer(
-            model=self.model,
-            args=args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            processing_class=self.tokenizer,
-        )
-        trainer.train()
-        trainer.save_model(str(self.model_dir))
-        self.tokenizer.save_pretrained(str(self.model_dir))
-
-    def _lazy_load(self):
-        if self.model is not None and self.tokenizer is not None:
-            return True
-        if self.model_dir.exists():
-            self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
-            self.model = AutoModelForSequenceClassification.from_pretrained(str(self.model_dir))
-            self.model.to(self.device)
-            return True
-        return False
-
-    def filter_doc(self, doc):
-        if not self._lazy_load():
-            return doc
-
-        tokens = list(doc.get("tokens", []) or [])
-        sentences = split_doc_into_sentences(tokens)
-
-        selected_tokens = []
-
-        for sent in sentences:
-            sent_text = " ".join(sent["tokens"])
-            enc = self.tokenizer(
-                sent_text,
-                truncation=True,
-                max_length=self.max_length,
-                padding="max_length",
-                return_tensors="pt",
-            )
-
-            enc = {k: v.to(self.device) for k, v in enc.items()}
-            
-            self.model.eval()
-            with torch.no_grad():
-                logits = self.model(**enc).logits
-                probs = torch.sigmoid(logits).cpu().numpy()[0]
-
-            if max(probs) >= self.threshold:
-                selected_tokens.extend(sent["tokens"])
-
-        if not selected_tokens:
-            selected_tokens = tokens[:]
-
-        return {
-            "pmid": doc["pmid"],
-            "tokens": selected_tokens,
-            "text": " ".join(selected_tokens),
-            "split": doc.get("split", ""),
-            "spans": doc.get("spans", {}),
-        }
-
-
-# In[6]:
+# In[4]:
 
 
 def label_id_to_field(label_id):
@@ -559,7 +246,7 @@ def decode_single_prediction(logits, ex, feature):
     return {k: dedupe_keep_order(v) for k, v in spans.items()}
 
 
-# In[7]:
+# In[5]:
 
 
 from collections import Counter
@@ -638,7 +325,7 @@ def evaluate_pipeline(pipeline, test_data: List[Dict], save_predictions: bool = 
     return summary, all_predictions
 
 
-# In[8]:
+# In[6]:
 
 
 def print_results_table(all_results: Dict[str, Dict]):
@@ -694,10 +381,8 @@ class TokenClassificationPipeline:
         self.dev_ratio = dev_ratio
         self.tokenizer = None
         self.model = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def train(self, train_data):
-        print("----------------------------------Using device:", self.device)
         set_all_seeds(self.seed)
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -717,7 +402,6 @@ class TokenClassificationPipeline:
             id2label=ID2LABEL,
             label2id=LABEL2ID,
         )
-        self.model.to(self.device)
 
         train_dataset = TokenClassificationDataset(fit_examples, self.tokenizer, max_length=self.max_length)
         eval_dataset = TokenClassificationDataset(dev_examples, self.tokenizer, max_length=self.max_length) if dev_examples else None
@@ -738,8 +422,6 @@ class TokenClassificationPipeline:
             metric_for_best_model="eval_loss" if eval_dataset is not None else None,
             greater_is_better=False,
             seed=self.seed,
-            fp16=torch.cuda.is_available(),
-            dataloader_pin_memory=torch.cuda.is_available(),
         )
 
         trainer = Trainer(
@@ -760,7 +442,6 @@ class TokenClassificationPipeline:
         if self.model_dir.exists():
             self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
             self.model = AutoModelForTokenClassification.from_pretrained(str(self.model_dir))
-            self.model.to(self.device)
             return True
         return False
 
@@ -783,45 +464,18 @@ class TokenClassificationPipeline:
         return decode_single_prediction(preds.predictions[0], ex, dataset.features[0])
 
 
-# In[9]:
-
-
-class TwoStageDecomposedPipeline:
-    def __init__(self):
-        self.name = "BiomedBERT-Sentence-Filter+Joint-Extractor"
-        self.router = SentenceRouter()
-        self.extractor = TokenClassificationPipeline(
-            model_name="microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract",
-            model_dir="./BiomedBERT_joint_extractor_model",
-        )
-
-    def train(self, train_data):
-        print("Training sentence router...")
-        self.router.train(train_data)
-
-        print("Preparing gold-filtered training data for joint extractor...")
-        filtered_train_data = [filter_doc_with_gold_sentences(doc) for doc in train_data]
-
-        print("Training joint extractor...")
-        self.extractor.train(filtered_train_data)
-
-    def extract(self, doc):
-        filtered_doc = self.router.filter_doc(doc)
-        return self.extractor.extract(filtered_doc)
-
-
-# In[ ]:
+# In[7]:
 
 
 def main():
     train = load_json("../../cleaned_data/train.json")
     test = load_json("../../cleaned_data/test.json")
 
-    pipe = TwoStageDecomposedPipeline()
-    print("Training two-stage decomposed pipeline...")
+    pipe = TokenClassificationPipeline()
+    print("Training token classification pipeline...")
     pipe.train(train)
 
-    print("Generating predictions on test set...")
+    print("Evaluating on test set...")
     summary, predictions = evaluate_pipeline(pipe, test, save_predictions=True)
 
     all_results = {pipe.name: summary}
@@ -834,7 +488,7 @@ def main():
         }
     }
 
-    out_path = Path("BiomedBERT_two_stage_decomposed_results.json")
+    out_path = Path("Token-Classification-BiomedBERT_results.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
@@ -843,7 +497,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
